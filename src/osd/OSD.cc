@@ -8647,6 +8647,36 @@ int OSD::init_op_flags(OpRequestRef& op)
     if (ceph_osd_op_mode_cache(iter->op.op))
       op->set_cache();
 
+    // check for ec base pool
+    int64_t poolid = m->get_pg().pool();
+    const pg_pool_t *pool = osdmap->get_pg_pool(poolid);
+    if (pool->is_tier()) {
+      const pg_pool_t *base_pool = osdmap->get_pg_pool(pool->tier_of);
+      assert(base_pool);
+      if (iter->op.op == CEPH_OSD_OP_SYNC_READ ||
+          iter->op.op == CEPH_OSD_OP_MAPEXT ||
+          iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
+          iter->op.op == CEPH_OSD_OP_WRITE ||
+          iter->op.op == CEPH_OSD_OP_ZERO ||
+          iter->op.op == CEPH_OSD_OP_TRUNCATE ||
+          iter->op.op == CEPH_OSD_OP_CLONERANGE ||
+          iter->op.op == CEPH_OSD_OP_TMAPGET ||
+          iter->op.op == CEPH_OSD_OP_TMAPPUT ||
+          iter->op.op == CEPH_OSD_OP_TMAPUP) {
+        if (base_pool->require_rollback()) {
+          op->set_promote();
+        }
+      } else if (iter->op.op == CEPH_OSD_OP_OMAPSETVALS ||
+                 iter->op.op == CEPH_OSD_OP_OMAPSETHEADER ||
+                 iter->op.op == CEPH_OSD_OP_OMAPCLEAR ||
+                 iter->op.op == CEPH_OSD_OP_OMAPRMKEYS ||
+		 iter->op.op == CEPH_OSD_OP_CALL) {
+        if (!base_pool->supports_omap()) {
+          op->set_promote();
+        }
+      }
+    }
+
     switch (iter->op.op) {
     case CEPH_OSD_OP_CALL:
       {
@@ -8719,23 +8749,6 @@ int OSD::init_op_flags(OpRequestRef& op)
       // If try_flush/flush/evict is the only op, can skip handle cache.
       if (m->ops.size() == 1) {
 	op->set_skip_handle_cache();
-      }
-      break;
-
-    case CEPH_OSD_OP_WRITE:
-    case CEPH_OSD_OP_ZERO:
-    case CEPH_OSD_OP_TRUNCATE:
-      // always force promotion for object overwrites on a ec base pool
-      {
-        int64_t poolid = m->get_pg().pool();
-        const pg_pool_t *pool = osdmap->get_pg_pool(poolid);
-        if (pool->is_tier()) {
-          const pg_pool_t *base_pool = osdmap->get_pg_pool(pool->tier_of);
-          assert(base_pool);
-          if (base_pool->is_erasure()) {
-            op->set_promote();
-          }
-        }
       }
       break;
 
